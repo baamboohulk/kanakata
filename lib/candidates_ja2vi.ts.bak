@@ -1,0 +1,372 @@
+import { RULES } from "./rules";
+import { splitKatakanaTokens, uniq } from "./util";
+import { katakanaToRomaji } from "./kana";
+import type { Breakdown, Preset } from "./types";
+import { getVietnameseGivenNames, getVietnameseSyllableIndex } from "./vi_data";
+
+
+type TokenAlt = { token: string; alts: string[] };
+
+// ===== Katakana token normalization =====
+function normKanaToken(s: string) {
+  return (s || "")
+    .trim()
+    .replace(/[・.\s]+/g, "") // bỏ dấu tách nếu lỡ lọt vào
+    .replace(/[ー－]/g, "")   // bỏ kéo dài âm
+    .replace(/ォォ/g, "オ")   // gõ kéo dài kiểu フォォン
+    .replace(/ォオ/g, "オ")
+    .replace(/オオ/g, "オ")
+    .replace(/ォ/g, "オ")    // gom nhỏ về thường (đơn giản hoá)
+    .replace(/ァ/g, "ア")
+    .replace(/ィ/g, "イ")
+    .replace(/ゥ/g, "ウ")
+    .replace(/ェ/g, "エ")
+    .replace(/ォ/g, "オ");
+}
+
+// ===== Alias dictionary (katakana token -> Vietnamese candidates) =====
+// Lưu ý: đây là alias "thói quen nhập/viết" rất hay gặp khi người Nhật viết tên Việt.
+const KANA_ALIAS: Record<string, string[]> = {
+  // ----- họ phổ biến -----
+  [normKanaToken("グエン")]: ["Nguyễn"],
+  [normKanaToken("グェン")]: ["Nguyễn"],
+  [normKanaToken("グエン")]: ["Nguyễn"],
+  [normKanaToken("チャン")]: ["Trần"],
+  [normKanaToken("チャン")]: ["Trần"],
+  [normKanaToken("レー")]: ["Lê"],
+  [normKanaToken("レ")]: ["Lê"],
+  [normKanaToken("ファム")]: ["Phạm"],
+  [normKanaToken("フアム")]: ["Phạm"],
+  [normKanaToken("ホアン")]: ["Hoàng"],
+  [normKanaToken("ホアング")]: ["Hoàng"],
+  [normKanaToken("ブイ")]: ["Bùi"],
+  [normKanaToken("ドー")]: ["Đỗ"],
+  [normKanaToken("ド")]: ["Đỗ"],
+  [normKanaToken("ダン")]: ["Đặng"],
+  [normKanaToken("ダン")]: ["Đặng"],
+  [normKanaToken("ヴー")]: ["Vũ", "Vu"],
+  [normKanaToken("ブー")]: ["Vũ", "Vu"],
+  [normKanaToken("ボー")]: ["Võ"],
+  [normKanaToken("ボ")]: ["Võ"],
+  [normKanaToken("ヴォー")]: ["Võ"],
+  [normKanaToken("ゴ")]: ["Ngô"],
+  [normKanaToken("ゴー")]: ["Ngô"],
+  [normKanaToken("ブオン")]: ["Vương"],
+
+  // ----- đệm phổ biến -----
+  [normKanaToken("ティ")]: ["Thị"],
+  [normKanaToken("テイ")]: ["Thị"],
+  [normKanaToken("ヴァン")]: ["Văn"],
+  [normKanaToken("バン")]: ["Văn"],
+  [normKanaToken("ミン")]: ["Minh"],
+  [normKanaToken("ドゥック")]: ["Đức"],
+  [normKanaToken("ドック")]: ["Đức"],
+  [normKanaToken("ゴック")]: ["Ngọc"],
+  [normKanaToken("クオック")]: ["Quốc"],
+  [normKanaToken("クォック")]: ["Quốc"],
+  [normKanaToken("フック")]: ["Phúc"],
+
+  // ----- tên nữ phổ biến -----
+  [normKanaToken("ラン")]: ["Lan"],
+  [normKanaToken("ハン")]: ["Hằng", "Hạnh", "Hân", "Han"],
+  [normKanaToken("アン")]: ["Anh", "An"],
+  [normKanaToken("リン")]: ["Linh"],
+  [normKanaToken("トゥイ")]: ["Thúy", "Thuý", "Thủy", "Thuỷ"],
+  [normKanaToken("チュイ")]: ["Thúy", "Thuý"],
+  [normKanaToken("ハオ")]: ["Hảo", "Hào", "Hậu"],
+
+  // ----- tên nam phổ biến -----
+  [normKanaToken("フイ")]: ["Huy"],
+  [normKanaToken("ホイ")]: ["Huy"],
+  [normKanaToken("ハイ")]: ["Hải", "Hai"],
+  [normKanaToken("フン")]: ["Hùng", "Hưng"],
+  [normKanaToken("ホン")]: ["Hôn", "Hồn", "Hốn", "Hổn", "Hõn", "Họn"], // CHÚ Ý: ホン ≠ Hương/Hồng
+  [normKanaToken("ロン")]: ["Long"],
+  [normKanaToken("ラム")]: ["Lâm"],
+  [normKanaToken("ナム")]: ["Nam"],
+  [normKanaToken("ソン")]: ["Sơn", "Son"],
+  [normKanaToken("トアン")]: ["Toàn", "Toàn"],
+  [normKanaToken("タイン")]: ["Thành"],
+
+  // ----- cụm “Hương/Phương” hay gặp khi nhập -----
+  // Thực tế "Hương" thường được người Nhật viết kiểu フオン/フォン/フォオン/... tuỳ thói quen.
+  [normKanaToken("フオン")]: ["Hương", "Phương"],
+  [normKanaToken("フォン")]: ["Hương", "Phương"],
+  [normKanaToken("フォオン")]: ["Hương", "Phương"],
+  [normKanaToken("フォォン")]: ["Hương", "Phương"],
+  [normKanaToken("フーン")]: ["Hương", "Phương"],
+
+  // ----- “Hồng” thường là ホン + グ hoặc ホング -----
+  [normKanaToken("ホング")]: ["Hồng"],
+  [normKanaToken("ホン")]: ["Hôn", "Hồn", "Hốn", "Hổn", "Hõn", "Họn"],
+
+  // ----- “Lưu” hay gặp (ルー) -----
+  [normKanaToken("ルー")]: ["Lưu", "Lu"],
+  [normKanaToken("リュウ")]: ["Lưu"],
+};
+
+
+
+const inverseIndex: Array<{ kana: string; vi: string }> = (() => {
+  const arr: Array<{ kana: string; vi: string }> = [];
+  for (const r of RULES) {
+    for (const k of r.kana) arr.push({ kana: k, vi: r.vi });
+  }
+  return arr;
+})();
+//
+function stripDiacritics(s: string) {
+  return s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/Đ/g, "D");
+}
+
+function titleCase(x: string) {
+  if (!x) return x;
+  return x[0].toUpperCase() + x.slice(1);
+}
+
+// Chỉ giữ option nào khi bỏ dấu ra đúng bằng key (chặn hon -> hung)
+function filterByKey(keyNoAccent: string, options: string[]) {
+  const k = stripDiacritics(keyNoAccent.toLowerCase().trim());
+  return options.filter((opt) => stripDiacritics(opt.toLowerCase()) === k);
+}
+
+// Convert token không dấu (vd: "van", "hoan", "hon") -> list token có dấu từ syllables.txt
+function expandToAccented(tokenNoAccent: string): string[] {
+  const idx = getVietnameseSyllableIndex();
+  const key = stripDiacritics(tokenNoAccent.toLowerCase().trim());
+
+  const options0 = idx.get(key) ?? [];
+  if (!options0.length) return [];
+
+  // Lọc chặt để không nhảy vần (hon không được ra hung)
+  const options = filterByKey(key, options0);
+
+  // Giới hạn để beam không nổ
+  return uniq(options.slice(0, 8).map(titleCase));
+}
+
+// Expand romaji/syllable với biến thể phổ biến do Nhật không phân biệt L/R, F/PH...
+function expandWithVariants(tokenNoAccent: string): string[] {
+  const key = stripDiacritics(tokenNoAccent.toLowerCase().trim());
+  const variants = new Set<string>();
+  variants.add(key);
+
+  // Nhật thường ghi L/R lẫn nhau => thử l-
+  if (key.startsWith("r") && key.length >= 2) {
+    variants.add("l" + key.slice(1));
+  }
+
+  // f <-> ph (hay gặp)
+  if (key.startsWith("f") && key.length >= 2) {
+    variants.add("ph" + key.slice(1));
+  }
+
+  const idx = getVietnameseSyllableIndex();
+  const out: string[] = [];
+
+  for (const v of variants) {
+    const options0 = idx.get(v) ?? [];
+    if (!options0.length) continue;
+    const options = filterByKey(v, options0);
+    out.push(...options);
+  }
+
+  return uniq(out.slice(0, 12).map(titleCase));
+}
+
+
+ function lookupViFromKanaToken(kanaToken: string): string[] {
+  // 1) Ưu tiên đảo RULES (nếu RULES của bạn có vi có dấu thì càng tốt)
+  const ali = KANA_ALIAS[normKanaToken(kanaToken)];
+    if (ali && ali.length) return uniq(ali);
+
+  const hits = inverseIndex
+    .filter((x) => x.kana === kanaToken)
+    .map((x) => x.vi);
+
+  /*if (hits.length) {
+    // Nếu hits đang không dấu thì vẫn ok (AI sẽ rerank), nhưng tốt nhất RULES cũng nên có dấu
+    return uniq(hits.map(titleCase));
+  }*/
+  
+  if (hits.length) {
+  const out: string[] = [];
+  for (const h of uniq(hits)) {
+    const ex = expandToAccented(h); // chuyển "van" -> ["Văn", ...]
+    if (ex.length) out.push(...ex);
+  }
+  // nếu không chuyển được bằng syllables thì fallback titleCase
+  return out.length ? uniq(out) : uniq(hits.map(titleCase));
+}
+
+
+  // 2) fallback: romaji -> key không dấu -> tra syllableIndex để lấy âm tiết có dấu hợp lệ
+  const rom = katakanaToRomaji(kanaToken);
+
+  const key = stripDiacritics(
+    rom
+      .replace(/^j/, "gi")
+      .replace(/^sh/, "s")
+      .replace(/^ch/, "ch")
+      .replace(/aa/g, "a")
+      .replace(/ii/g, "i")
+      .replace(/uu/g, "u")
+      .replace(/ee/g, "e")
+      .replace(/oo/g, "o")
+      .toLowerCase()
+      .trim()
+  );
+
+  const idx = getVietnameseSyllableIndex();
+  const options0 = idx.get(key) ?? [];
+  if (!options0.length) return [];
+  
+  // (3.2) lọc chặt theo key để không nhảy vần
+  const options = filterByKey(key, options0);
+  
+  const given = getVietnameseGivenNames();
+  const sorted = [...options].sort((a, b) => {
+    const pa = given.has(a.toLowerCase()) ? 1 : 0;
+    const pb = given.has(b.toLowerCase()) ? 1 : 0;
+    return pb - pa;
+  });
+  
+  return uniq(sorted.slice(0, 6).map(titleCase));
+}
+
+
+export function generateNBestJa2Vi(katakana: string, preset: Preset, nBest: number) {
+  const tokens = splitKatakanaTokens(katakana);
+
+  if (!tokens || !Array.isArray(tokens) || tokens.length === 0) {
+  return { tokens: [], lattice: [], paths: [] };
+}
+
+ 
+  const given = getVietnameseGivenNames();
+  const lattice: TokenAlt[] = tokens.map((t, i) => {
+  let alts = lookupViFromKanaToken(t);
+
+  // 2 token cuối thường là "tên" => chỉ giữ cái có trong namedb nếu có
+  if (i >= tokens.length - 2) {
+    const inDb = alts.filter((x) => given.has(x.toLowerCase()));
+    if (inDb.length) {
+      alts = inDb;
+  } else {
+      // nếu không có cái nào trong DB => chỉ giữ rất ít để tránh rác
+      alts = alts.slice(0, 2);
+    }
+  }
+
+  if (!alts.length) {
+    const rom = katakanaToRomaji(t).toLowerCase().trim();
+    return { token: t, alts: rom ? [rom] : [""] };
+  }
+  return { token: t, alts };
+});
+
+
+
+//
+
+
+  type BeamItem = { s: string[]; score: number; breakdown: Breakdown[] };
+  let beam: BeamItem[] = [{ s: [], score: 0, breakdown: [] }];
+  const beamWidth = Math.max(80, nBest * 12);
+
+  for (let i = 0; i < lattice.length; i++) {
+    const { token, alts } = lattice[i];
+    const next: BeamItem[] = [];
+    for (const b of beam) {
+      for (let k = 0; k < alts.length; k++) {
+        const chosen = alts[k];
+        let heur = (k === 0 ? 0 : -0.2);
+
+        // Boost "Thị" nếu là token thứ 2
+        if (i === 1 && chosen.toLowerCase() === "thị") heur += 1.5;
+        
+        // Boost nếu thuộc 2 token cuối và nằm trong namedb (boy/girl)
+        if (i >= lattice.length - 2 && given.has(chosen.toLowerCase())) heur += 1.0;
+        if (i >= lattice.length - 2 && !given.has(chosen.toLowerCase())) heur -= 4.0;
+
+        
+        // Phạt fallback romaji (không dấu, không có ký tự có dấu unicode)
+        const isFallbackRomaji =
+          chosen === chosen.toLowerCase() && !/[\u00C0-\u1EF9]/.test(chosen);
+        if (isFallbackRomaji) heur -= 2.5;
+
+
+
+        next.push({
+          s: [...b.s, chosen],
+          score: b.score + heur,
+          breakdown: [...b.breakdown, { syllable: token, chosen, alts }]
+        });
+      }
+    }
+    next.sort((a, b) => b.score - a.score);
+    beam = next.slice(0, beamWidth);
+  }
+
+  /*const paths = beam
+    .slice(0, nBest * 4)
+    .map((b) => ({ text: b.s.map(capitalize).join(" "), breakdown: b.breakdown }));*/ 
+
+
+  /*const paths = beam
+  .slice(0, nBest * 4)
+  .map((b) => {
+    const words = b.s.map((w) => {
+      // nếu w không dấu (romaji) mà syllables có => đổi sang có dấu (lấy option đầu)
+      const ex = expandToAccented(w);
+      return ex.length ? ex[0] : capitalize(w);
+    });
+    return { text: words.join(" "), breakdown: b.breakdown };
+  });
+
+
+  return { tokens, lattice, paths };
+
+  function capitalize(x: string) {
+    if (!x) return x;
+    return x[0].toUpperCase() + x.slice(1);
+  }
+}*/ 
+
+const paths = beam
+  .slice(0, nBest * 4)
+  .map((b) => {
+    const words = b.s.map((w, idxWord) => {
+      const raw = (w || "").trim();
+      if (!raw) return raw;
+
+      // Nếu đã có dấu Unicode rồi => giữ nguyên
+      if (/[\u00C0-\u1EF9]/.test(raw)) return titleCase(raw);
+
+      // Mở rộng sang có dấu + biến thể (r->l, f->ph)
+      const ex = expandWithVariants(raw);
+      if (!ex.length) return capitalize(raw);
+
+      // ƯU TIÊN tên người thật cho 2 từ cuối (để chọn Hương, không chọn Huống)
+      if (idxWord >= b.s.length - 2) {
+        const inDb = ex.filter((x) => given.has(x.toLowerCase()));
+        if (inDb.length) return inDb[0];
+      }
+
+      // Với từ đệm (vị trí 2): ưu tiên Thị/Văn nếu có
+      if (idxWord === 1) {
+        const prefer = ex.find((x) => x.toLowerCase() === "thị") || ex.find((x) => x.toLowerCase() === "văn");
+        if (prefer) return prefer;
+      }
+
+      // Default: lấy option đầu
+      return ex[0];
+    });
+
+    return { text: words.join(" "), breakdown: b.breakdown };
+  });
+}
