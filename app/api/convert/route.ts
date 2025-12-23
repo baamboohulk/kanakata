@@ -16,9 +16,24 @@ export async function POST(req: Request) {
     const direction = body.direction;
     const nBest = Math.max(3, Math.min(30, Number(body.nBest) || 10));
 
-    if (!original) {
+    /*if (!original) {
       return NextResponse.json({ error: "Input rỗng." } satisfies ConvertResponse, { status: 400 });
-    }
+    }*/
+
+    if (!original) {
+  return NextResponse.json(
+    {
+      original: "",
+      normalized: "",
+      preset,
+      direction,
+      results: [],
+      error: "Input rỗng."
+    } satisfies ConvertResponse,
+    { status: 400 }
+  );
+}
+
 
     const normalized =
       direction === "vi2ja"
@@ -84,6 +99,20 @@ export async function PUT(req: Request) {
     putPreferred(normalized, body.preset, body.direction, body.chosen);
     return NextResponse.json({ ok: true });
   } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message ?? "Server error" }, { status: 500 });
+    /*return NextResponse.json({ ok: false, error: e?.message ?? "Server error" }, { status: 500 });*/
+
+    return NextResponse.json(
+  {
+    original: "",
+    normalized: "",
+    preset: "hoso",
+    direction: "vi2ja",
+    results: [],
+    error: e?.message ?? "Server error"
+  } satisfies ConvertResponse,
+  { status: 500 }
+);
+
+
   }
 }
