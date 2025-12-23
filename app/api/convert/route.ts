@@ -81,12 +81,30 @@ export async function POST(req: Request) {
 
     const out: ConvertResponse = { original, normalized, preset, direction, results };
     return NextResponse.json(out);
-  } catch (e: any) {
+  /*} catch (e: any) {
     return NextResponse.json(
       { error: e?.message ?? "Server error" } satisfies ConvertResponse,
       { status: 500 }
     );
-  }
+  }*/
+  
+  } catch (e: any) {
+  return NextResponse.json(
+    {
+      original: "",
+      normalized: "",
+      preset: "hoso",
+      direction: "vi2ja",
+      results: [],
+      error: e?.message ?? "Server error"
+    } satisfies ConvertResponse,
+    { status: 500 }
+  );
+}
+
+
+
+
 }
 
 export async function PUT(req: Request) {
