@@ -7,10 +7,8 @@
 
 ## Streaming output là gì?
 Thông thường API sẽ chờ model tạo xong toàn bộ output rồi mới trả 1 lần.
-**Streaming** sẽ trả dữ liệu **từng mẩu (chunks)** trong lúc model đang sinh, giúp UI:
-- thấy tiến trình ngay
-- hiển thị options dần
-- giảm cảm giác “đứng hình”
+**Streaming** sẽ trả dữ liệu **từng mẩu (chunks)** trong lúc model đang sinh
+
 
 Ở project này:
 - `/api/convert` là kiểu thường (không streaming)
